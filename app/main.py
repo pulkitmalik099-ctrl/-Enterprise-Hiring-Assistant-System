@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.api import candidates, jobs, workflows
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -20,12 +21,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Include routers
+app.include_router(candidates.router)
+app.include_router(jobs.router)
+app.include_router(workflows.router)
+
 @app.get("/")
 async def root():
     return {
         "message": "Enterprise Hiring Assistant API",
         "docs": "/api/docs",
-        "version": settings.APP_VERSION
+        "version": settings.APP_VERSION,
+        "available_endpoints": {
+            "candidates": "/api/candidates",
+            "jobs": "/api/jobs",
+            "workflows": "/api/workflows"
+        }
     }
 
 @app.get("/health")
