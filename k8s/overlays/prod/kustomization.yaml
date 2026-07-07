@@ -1,0 +1,50 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+bases:
+- ../../base
+
+namespace: hiring-prod
+
+namePrefix: prod-
+
+commonLabels:
+  environment: production
+
+commonAnnotations:
+  environment: production
+  zone: prod
+
+replicas:
+- name: prod-hiring-backend
+  count: 5
+- name: prod-hiring-frontend
+  count: 3
+
+patchesStrategicMerge:
+- deployment-patch.yaml
+
+configMapGenerator:
+- name: hiring-config
+  behavior: merge
+  literals:
+  - environment=production
+  - debug=false
+  - api-url=https://hiring-assistant.example.com/api
+
+secretGenerator:
+- name: hiring-secrets
+  behavior: merge
+  envs:
+  - secrets.env
+
+images:
+- name: ghcr.io/pulkitmalik099-ctrl/enterprise-hiring-assistant
+  newTag: v1.0.0
+- name: ghcr.io/pulkitmalik099-ctrl/enterprise-hiring-assistant-frontend
+  newTag: v1.0.0
+
+resources:
+- rbac.yaml
+- monitoring.yaml
+- backup-policy.yaml

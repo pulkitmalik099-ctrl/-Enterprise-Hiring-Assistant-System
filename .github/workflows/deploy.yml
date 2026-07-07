@@ -1,0 +1,157 @@
+name: Deploy to Kubernetes
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: pulkitmalik099-ctrl/enterprise-hiring-assistant
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      backend-image: ${{ steps.image.outputs.backend }}
+      frontend-image: ${{ steps.image.outputs.frontend }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build and push backend image
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        push: true
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Build and push frontend image
+      uses: docker/build-push-action@v4
+      with:
+        context: ./frontend
+        push: true
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ github.sha }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Output image tags
+      id: image
+      run: |
+        echo "backend=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+        echo "frontend=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ github.sha }}" >> $GITHUB_OUTPUT
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    strategy:
+      matrix:
+        environment: [staging, prod]
+      max-parallel: 1
+
+    environment:
+      name: ${{ matrix.environment }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set environment
+      run: |
+        if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+          echo "ENV=staging" >> $GITHUB_ENV
+        fi
+        if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then
+          echo "ENV=prod" >> $GITHUB_ENV
+        fi
+
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Set AKS context
+      uses: azure/aks-set-context@v3
+      with:
+        resource-group: 'hiring-assistant-rg'
+        cluster-name: 'hiring-aks-${{ env.ENV }}'
+
+    - name: Install Kustomize
+      run: |
+        curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+        sudo mv kustomize /usr/local/bin/
+
+    - name: Update images in kustomization
+      run: |
+        cd k8s/overlays/${{ env.ENV }}
+        kustomize edit set image \
+          ghcr.io/pulkitmalik099-ctrl/enterprise-hiring-assistant=${{ needs.build.outputs.backend-image }} \
+          ghcr.io/pulkitmalik099-ctrl/enterprise-hiring-assistant-frontend=${{ needs.build.outputs.frontend-image }}
+
+    - name: Apply Kustomize configuration
+      run: |
+        kubectl apply -k k8s/overlays/${{ env.ENV }}/
+
+    - name: Wait for rollout
+      run: |
+        kubectl -n hiring-${{ env.ENV }} rollout status deployment/hiring-backend --timeout=5m
+        kubectl -n hiring-${{ env.ENV }} rollout status deployment/hiring-frontend --timeout=5m
+
+    - name: Run smoke tests
+      run: |
+        kubectl -n hiring-${{ env.ENV }} run smoke-test \
+          --image=curlimages/curl:latest \
+          --rm -i --restart=Never \
+          -- sh -c "curl -f http://hiring-frontend/health && curl -f http://hiring-backend/health"
+
+    - name: Send deployment notification
+      if: success()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        text: 'Deployment to ${{ env.ENV }} completed successfully'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        fields: repo,message,commit
+
+    - name: Send failure notification
+      if: failure()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        text: 'Deployment to ${{ env.ENV }} failed'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        fields: repo,message,commit

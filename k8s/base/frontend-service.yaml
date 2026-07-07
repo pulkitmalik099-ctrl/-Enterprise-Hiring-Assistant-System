@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: hiring-frontend
+  labels:
+    app: hiring-frontend
+spec:
+  type: ClusterIP
+  selector:
+    app: hiring-frontend
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+    protocol: TCP
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hiring-frontend
+  labels:
+    app: hiring-frontend

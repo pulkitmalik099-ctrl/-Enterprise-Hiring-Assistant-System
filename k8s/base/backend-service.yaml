@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: hiring-backend
+  labels:
+    app: hiring-backend
+spec:
+  type: ClusterIP
+  selector:
+    app: hiring-backend
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+    protocol: TCP
+  sessionAffinity: None
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hiring-backend
+  labels:
+    app: hiring-backend
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hiring-backend
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hiring-backend
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hiring-backend
+subjects:
+- kind: ServiceAccount
+  name: hiring-backend

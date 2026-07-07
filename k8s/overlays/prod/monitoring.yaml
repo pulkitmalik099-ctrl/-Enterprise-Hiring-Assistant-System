@@ -1,0 +1,143 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      external_labels:
+        cluster: 'hiring-assistant-prod'
+
+    alerting:
+      alertmanagers:
+      - static_configs:
+        - targets:
+          - alertmanager:9093
+
+    rule_files:
+    - /etc/prometheus/rules/*.yml
+
+    scrape_configs:
+    - job_name: 'kubernetes-apiservers'
+      kubernetes_sd_configs:
+      - role: endpoints
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+
+    - job_name: 'hiring-backend'
+      kubernetes_sd_configs:
+      - role: pod
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: hiring-backend
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: replace
+        target_label: pod
+      - source_labels: [__meta_kubernetes_namespace]
+        action: replace
+        target_label: namespace
+
+    - job_name: 'hiring-frontend'
+      kubernetes_sd_configs:
+      - role: pod
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: hiring-frontend
+
+    - job_name: 'node'
+      kubernetes_sd_configs:
+      - role: node
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+data:
+  alerts.yml: |
+    groups:
+    - name: hiring-assistant
+      interval: 30s
+      rules:
+      - alert: HighErrorRate
+        expr: |
+          (sum(rate(http_requests_total{job="hiring-backend",status=~"5.."}[5m])) by (job) /
+           sum(rate(http_requests_total{job="hiring-backend"}[5m])) by (job)) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate detected"
+
+      - alert: PodMemoryUsageHigh
+        expr: |
+          (sum(container_memory_usage_bytes{pod=~"prod-hiring-.*"}) by (pod) /
+           sum(container_spec_memory_limit_bytes{pod=~"prod-hiring-.*"}) by (pod)) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pod memory usage above 90%"
+
+      - alert: PodCpuUsageHigh
+        expr: |
+          (sum(rate(container_cpu_usage_seconds_total{pod=~"prod-hiring-.*"}[5m])) by (pod) /
+           sum(container_spec_cpu_quota{pod=~"prod-hiring-.*"}) by (pod)) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pod CPU usage above 80%"
+
+      - alert: DatabaseDown
+        expr: |
+          pg_up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL database is down"
+
+      - alert: APILatencyHigh
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="hiring-backend"}[5m])) by (le)) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API latency is high (p95 > 1s)"
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: hiring-backend
+spec:
+  selector:
+    matchLabels:
+      app: hiring-backend
+  endpoints:
+  - port: http
+    interval: 30s
+    path: /metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: hiring-frontend
+spec:
+  selector:
+    matchLabels:
+      app: hiring-frontend
+  endpoints:
+  - port: http
+    interval: 30s
+    path: /metrics

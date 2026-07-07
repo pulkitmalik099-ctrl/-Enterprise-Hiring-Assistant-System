@@ -1,0 +1,115 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-script
+data:
+  backup.sh: |
+    #!/bin/bash
+    set -e
+
+    BACKUP_DIR="/backups"
+    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    DB_BACKUP="$BACKUP_DIR/db_backup_$TIMESTAMP.sql"
+    LOG_FILE="$BACKUP_DIR/backup_$TIMESTAMP.log"
+
+    echo "Starting backup at $(date)" | tee "$LOG_FILE"
+
+    # Backup PostgreSQL
+    echo "Backing up PostgreSQL..." | tee -a "$LOG_FILE"
+    pg_dump -h postgres -U hiring_user -d hiring_db > "$DB_BACKUP" 2>> "$LOG_FILE"
+    echo "PostgreSQL backup completed: $DB_BACKUP" | tee -a "$LOG_FILE"
+
+    # Compress backup
+    gzip "$DB_BACKUP"
+    echo "Backup compressed to $DB_BACKUP.gz" | tee -a "$LOG_FILE"
+
+    # Upload to S3 (if configured)
+    if [ -n "$AWS_S3_BUCKET" ]; then
+      echo "Uploading to S3..." | tee -a "$LOG_FILE"
+      aws s3 cp "$DB_BACKUP.gz" "s3://$AWS_S3_BUCKET/backups/" 2>> "$LOG_FILE"
+      echo "Backup uploaded to S3" | tee -a "$LOG_FILE"
+    fi
+
+    # Cleanup old backups (keep last 30 days)
+    echo "Cleaning up old backups..." | tee -a "$LOG_FILE"
+    find "$BACKUP_DIR" -name "db_backup_*.sql.gz" -mtime +30 -delete
+
+    echo "Backup completed at $(date)" | tee -a "$LOG_FILE"
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: database-backup
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: backup-service
+          containers:
+          - name: backup
+            image: postgres:15
+            env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secret
+                  key: password
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: access-key-id
+                  optional: true
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: secret-access-key
+                  optional: true
+            - name: AWS_S3_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: hiring-config
+                  key: s3-bucket
+                  optional: true
+            command:
+            - /bin/bash
+            - -c
+            - |
+              apt-get update && apt-get install -y awscli
+              /scripts/backup.sh
+            volumeMounts:
+            - name: backup-script
+              mountPath: /scripts
+            - name: backup-storage
+              mountPath: /backups
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "250m"
+              limits:
+                memory: "1Gi"
+                cpu: "500m"
+          volumes:
+          - name: backup-script
+            configMap:
+              name: backup-script
+              defaultMode: 0755
+          - name: backup-storage
+            persistentVolumeClaim:
+              claimName: backup-pvc
+          restartPolicy: OnFailure
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backup-pvc
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: standard
