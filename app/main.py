@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.api import candidates, jobs, workflows
+from app.api import candidates, jobs, workflows, interviews, salaries, decisions
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -25,6 +25,9 @@ app.add_middleware(
 app.include_router(candidates.router)
 app.include_router(jobs.router)
 app.include_router(workflows.router)
+app.include_router(interviews.router)
+app.include_router(salaries.router)
+app.include_router(decisions.router)
 
 @app.get("/")
 async def root():
@@ -35,6 +38,9 @@ async def root():
         "available_endpoints": {
             "candidates": "/api/candidates",
             "jobs": "/api/jobs",
+            "interviews": "/api/interviews",
+            "salaries": "/api/salaries",
+            "decisions": "/api/decisions",
             "workflows": "/api/workflows"
         }
     }
